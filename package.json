@@ -1,17 +1,26 @@
 {
-  "name": "business-generator-frontend",
-  "version": "0.1.0",
+  "name": "business-generator-ml-pipeline",
+  "version": "1.0.0",
+  "description": "AI-powered Business Name & Logo Generator with Machine Learning Pipeline",
   "private": true,
+  "scripts": {
+    "start": "concurrently \"npm run start:frontend\" \"npm run start:backend\"",
+    "start:frontend": "cd . && react-scripts start",
+    "start:backend": "cd backend && python server.py",
+    "train": "python train_pipeline.py",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject",
+    "install:backend": "cd backend && pip install -r requirements.txt",
+    "setup": "npm install && npm run install:backend"
+  },
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-scripts": "5.0.1"
   },
-  "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build",
-    "test": "react-scripts test",
-    "eject": "react-scripts eject"
+  "devDependencies": {
+    "concurrently": "^7.6.0"
   },
   "eslintConfig": {
     "extends": [
@@ -30,5 +39,15 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
-  }
+  },
+  "keywords": [
+    "business-generator",
+    "machine-learning",
+    "ai",
+    "logo-generator",
+    "nlp",
+    "transformer"
+  ],
+  "author": "Business Generator ML Team",
+  "license": "MIT"
 }

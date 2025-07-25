@@ -1,3 +1,4 @@
 flask
-flask_cors
-openai
+flask-cors
+numpy
+random2

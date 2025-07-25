@@ -1,6 +1,6 @@
-// src/App.js (React Frontend)
+// Simple Business Name & Logo Generator
 import React, { useState } from 'react';
-import './App.css'; // Basic CSS for styling
+import './App.css';
 
 function App() {
   const [idea, setIdea] = useState('');
@@ -12,13 +12,18 @@ function App() {
   const [loadingLogo, setLoadingLogo] = useState(false);
   const [error, setError] = useState('');
 
-  const handleNameSubmit = async (e) => {
+  const generateNames = async (e) => {
     e.preventDefault();
+    if (!idea.trim() || !theme.trim()) {
+      setError('Please enter both business idea and theme');
+      return;
+    }
+
     setLoadingNames(true);
     setNames([]);
+    setSelectedName('');
     setLogoUrl('');
     setError('');
-    setSelectedName('');
 
     try {
       const response = await fetch('http://localhost:5000/generate_business_names', {
@@ -26,25 +31,28 @@ function App() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ idea, theme }),
+        body: JSON.stringify({ idea: idea.trim(), theme: theme.trim() }),
       });
 
       const data = await response.json();
 
       if (response.ok) {
         setNames(data.business_names || []);
+        if (data.business_names && data.business_names.length === 0) {
+          setError('No names generated. Try different keywords.');
+        }
       } else {
-        setError(data.error || 'An unknown error occurred.');
+        setError(data.error || 'Failed to generate names');
       }
     } catch (err) {
-      setError('Failed to connect to the backend server. Please try again later.');
-      console.error('Fetch error:', err);
+      setError('Cannot connect to server. Make sure the backend is running on port 5000.');
+      console.error('Error:', err);
     } finally {
       setLoadingNames(false);
     }
   };
 
-  const handleNameClick = async (name) => {
+  const generateLogo = async (name) => {
     setSelectedName(name);
     setLoadingLogo(true);
     setLogoUrl('');
@@ -63,12 +71,15 @@ function App() {
 
       if (response.ok) {
         setLogoUrl(data.business_logo_url || '');
+        if (!data.business_logo_url) {
+          setError('Logo generated but no URL returned');
+        }
       } else {
-        setError(data.error || 'An unknown error occurred.');
+        setError(data.error || 'Failed to generate logo');
       }
     } catch (err) {
-      setError('Failed to connect to the backend server. Please try again later.');
-      console.error('Fetch error:', err);
+      setError('Cannot connect to server for logo generation.');
+      console.error('Logo error:', err);
     } finally {
       setLoadingLogo(false);
     }
@@ -76,64 +87,82 @@ function App() {
 
   return (
     <div className="App">
-      <header className="App-header">
-        <h1>Business Name & Logo Generator</h1>
-        <form onSubmit={handleNameSubmit}>
+      <div className="App-header">
+        <h1>🚀 Business Name & Logo Generator</h1>
+        <p>Enter your business idea and theme to generate creative names and logos</p>
+        
+        <form onSubmit={generateNames} className="main-form">
           <div className="form-group">
-            <label htmlFor="idea">Business Idea:</label>
+            <label>Business Idea:</label>
             <input
               type="text"
-              id="idea"
               value={idea}
               onChange={(e) => setIdea(e.target.value)}
-              placeholder="e.g., eco-friendly coffee shop"
+              placeholder="e.g., coffee shop, tech startup, bakery"
               required
             />
           </div>
+          
           <div className="form-group">
-            <label htmlFor="theme">Business Theme:</label>
+            <label>Theme:</label>
             <input
               type="text"
-              id="theme"
               value={theme}
               onChange={(e) => setTheme(e.target.value)}
-              placeholder="e.g., minimalist, rustic, futuristic"
+              placeholder="e.g., modern, eco-friendly, vintage"
               required
             />
           </div>
-          <button type="submit" disabled={loadingNames}>
-            {loadingNames ? 'Generating Names...' : 'Generate Names'}
+          
+          <button type="submit" disabled={loadingNames} className="generate-btn">
+            {loadingNames ? '🔄 Generating Names...' : 'Generate Business Names'}
           </button>
         </form>
 
-        {error && <p className="error-message">{error}</p>}
+        {error && (
+          <div className="error-message">
+            ⚠️ {error}
+          </div>
+        )}
 
-        {!loadingNames && names.length > 0 && (
-          <div className="results">
-            <h2>Choose a Name to Generate a Logo:</h2>
-            <div className="names-section">
-              <ul>
-                {names.map((name, index) => (
-                  <li key={index}>
-                    <button onClick={() => handleNameClick(name)} disabled={loadingLogo}>
-                      {name}
-                    </button>
-                  </li>
-                ))}
-              </ul>
+        {names.length > 0 && (
+          <div className="results-section">
+            <h2>🎉 Generated Names (Click to generate logo):</h2>
+            <div className="names-grid">
+              {names.map((name, index) => (
+                <button
+                  key={index}
+                  className={`name-card ${selectedName === name ? 'selected' : ''}`}
+                  onClick={() => generateLogo(name)}
+                  disabled={loadingLogo}
+                >
+                  {name}
+                </button>
+              ))}
             </div>
           </div>
         )}
 
-        {loadingLogo && <p>Generating logo for "{selectedName}"...</p>}
-
-        {logoUrl && (
-          <div className="logo-section">
-            <h3>Business Logo for "{selectedName}":</h3>
-            <img src={logoUrl} alt="Generated Business Logo" className="business-logo" />
+        {loadingLogo && (
+          <div className="loading-message">
+            🎨 Generating logo for "{selectedName}"...
           </div>
         )}
-      </header>
+
+        {logoUrl && selectedName && (
+          <div className="logo-section">
+            <h2>🎨 Logo for "{selectedName}"</h2>
+            <div className="logo-container">
+              <img src={logoUrl} alt={`${selectedName} logo`} className="logo-image" />
+              <div className="logo-actions">
+                <a href={logoUrl} download={`${selectedName.replace(/\s+/g, '_')}_logo.svg`} className="download-btn">
+                  💾 Download Logo
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
