@@ -11,6 +11,30 @@ function App() {
   const [loadingNames, setLoadingNames] = useState(false);
   const [loadingLogo, setLoadingLogo] = useState(false);
   const [error, setError] = useState('');
+  const [connectionStatus, setConnectionStatus] = useState('');
+
+  const testConnection = async () => {
+    setConnectionStatus('Testing...');
+    try {
+      const response = await fetch('http://localhost:5000/health', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setConnectionStatus('✅ Server connection OK');
+        console.log('Health check successful:', data);
+      } else {
+        setConnectionStatus('❌ Server responded with error');
+      }
+    } catch (err) {
+      setConnectionStatus('❌ Cannot reach server');
+      console.error('Connection test failed:', err);
+    }
+  };
 
   const generateNames = async (e) => {
     e.preventDefault();
@@ -59,15 +83,27 @@ function App() {
     setError('');
 
     try {
+      console.log('Attempting to generate logo for:', name);
+      
+      // Add timeout to prevent hanging requests
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+      
       const response = await fetch('http://localhost:5000/generate_logo', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ name }),
+        signal: controller.signal
       });
+      
+      clearTimeout(timeoutId);
+      console.log('Response status:', response.status);
+      console.log('Response ok:', response.ok);
 
       const data = await response.json();
+      console.log('Response data:', data);
 
       if (response.ok) {
         setLogoUrl(data.business_logo_url || '');
@@ -78,7 +114,12 @@ function App() {
         setError(data.error || 'Failed to generate logo');
       }
     } catch (err) {
-      setError('Cannot connect to server for logo generation.');
+      console.error('Logo generation error:', err);
+      if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
+        setError('🔌 Connection failed! Please check: 1) Backend server is running, 2) No firewall blocking localhost:5000, 3) Try the "Test Server Connection" button above.');
+      } else {
+        setError('Cannot connect to server for logo generation. Please ensure the backend is running on port 5000.');
+      }
       console.error('Logo error:', err);
     } finally {
       setLoadingLogo(false);
@@ -90,6 +131,24 @@ function App() {
       <div className="App-header">
         <h1>🚀 Business Name & Logo Generator</h1>
         <p>Enter your business idea and theme to generate creative names and logos</p>
+        
+        <div style={{ marginBottom: '20px' }}>
+          <button 
+            onClick={testConnection} 
+            style={{ 
+              background: '#28a745', 
+              color: 'white', 
+              border: 'none', 
+              padding: '8px 16px', 
+              borderRadius: '4px', 
+              cursor: 'pointer',
+              marginRight: '10px'
+            }}
+          >
+            Test Server Connection
+          </button>
+          {connectionStatus && <span style={{ color: connectionStatus.includes('✅') ? '#28a745' : '#dc3545' }}>{connectionStatus}</span>}
+        </div>
         
         <form onSubmit={generateNames} className="main-form">
           <div className="form-group">

@@ -269,6 +269,15 @@ def evaluate_pipeline():
         logger.error(f"Error evaluating pipeline: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Simple health check endpoint."""
+    return jsonify({
+        "status": "healthy",
+        "server": "Business Generator API",
+        "timestamp": str(Path(__file__).stat().st_mtime)
+    })
+
 @app.route('/pipeline_status', methods=['GET'])
 def pipeline_status():
     """Get the status of the ML pipeline."""
