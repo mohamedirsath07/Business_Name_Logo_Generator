@@ -2,3 +2,6 @@ flask
 flask-cors
 numpy
 random2
+requests
+google-generativeai
+python-dotenv

@@ -19,6 +19,7 @@ yarn-error.log*
 .env.development.local
 .env.test.local
 .env.production.local
+backend/.env
 
 # Python cache
 *.pyc
@@ -38,3 +39,4 @@ yarn-error.log*
 *.tmp
 *.temp
 debug.html
+public/debug.html

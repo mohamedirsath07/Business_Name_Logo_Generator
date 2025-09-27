@@ -6,6 +6,28 @@ from flask_cors import CORS
 import random
 import base64
 import logging
+import requests
+import urllib.parse
+import json
+import re
+
+# Optional: load .env for local development
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+# Optional: Gemini API (configured if API key provided)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+# Use dynamic import to avoid static analyzer unresolved import warnings when package isn't installed
+try:
+    from importlib import import_module
+    genai = import_module("google.generativeai")  # pip install google-generativeai
+    GEMINI_AVAILABLE = True
+except Exception:
+    genai = None
+    GEMINI_AVAILABLE = False
 
 # Add the project root to the Python path
 project_root = Path(__file__).parent.parent
@@ -17,6 +39,11 @@ CORS(app)
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Feature flags / provider selection via environment
+USE_EXTERNAL_APIS = os.getenv("USE_EXTERNAL_APIS", "true").lower() == "true"
+NAME_PROVIDER = os.getenv("NAME_PROVIDER", "datamuse")  # datamuse | ml | template
+LOGO_PROVIDER = os.getenv("LOGO_PROVIDER", "dicebear")   # dicebear | ml | svg
 
 # Initialize ML Pipeline
 try:
@@ -33,6 +60,217 @@ try:
 except Exception as e:
     logger.warning(f"⚠️  Failed to initialize ML Pipeline: {e}. Falling back to template-based generation.")
     USE_ML_PIPELINE = False
+
+
+# -----------------------------
+# External Providers (No API key)
+# -----------------------------
+
+def generate_names_datamuse(idea: str, theme: str, max_results: int = 12):
+    """Generate business names using the free Datamuse API (no key required).
+    Strategy: fetch adjectives related to theme and nouns related to idea, then combine.
+    """
+    try:
+        session = requests.Session()
+        session.headers.update({"User-Agent": "BusinessGenerator/1.0"})
+
+        # Get adjectives for the theme (rel_jjb: adjectives commonly used to describe the noun)
+        adj_url = "https://api.datamuse.com/words"
+        adj_params = {"rel_jjb": theme, "max": 20}
+        adj_resp = session.get(adj_url, params=adj_params, timeout=8)
+        adj_words = [w.get("word", "") for w in adj_resp.json() if w.get("word")]
+
+        # Get nouns similar in meaning to idea (ml: means like)
+        noun_params = {"ml": idea, "max": 20}
+        noun_resp = session.get(adj_url, params=noun_params, timeout=8)
+        noun_words = [w.get("word", "") for w in noun_resp.json() if w.get("word")]
+
+        # Fallback if API empty
+        if not adj_words:
+            adj_words = [theme]
+        if not noun_words:
+            noun_words = [idea]
+
+        # Combine into candidate names
+        def title(s: str):
+            return s.replace("-", " ").replace("_", " ").title()
+
+        candidates = set()
+        for a in adj_words[:10]:
+            for n in noun_words[:10]:
+                a_t, n_t = title(a), title(n)
+                forms = [
+                    f"{a_t} {n_t}",
+                    f"The {n_t} Co.",
+                    f"{n_t} & {a_t}",
+                    f"{a_t} {title(idea)}",
+                    f"{a_t} {title(theme)} {title(idea)}",
+                ]
+                for f in forms:
+                    if 4 <= len(f) <= 28:
+                        candidates.add(f)
+
+        # Deterministic shuffle for repeatability per input
+        seed = hash((idea.lower(), theme.lower())) % (2**32)
+        rng = random.Random(seed)
+        candidates = list(candidates)
+        rng.shuffle(candidates)
+        return candidates[:max_results] if candidates else generate_template_names(idea, theme)
+
+    except Exception as e:
+        logger.warning(f"Datamuse generation failed: {e}")
+        return generate_template_names(idea, theme)
+
+
+def dicebear_logo_url(name: str) -> str:
+    """Generate a DiceBear SVG avatar URL seeded by the business name (no key required).
+    Uses the 'shapes' collection for clean, brand-like logos.
+    Docs: https://www.dicebear.com/styles/shapes
+    """
+    seed = urllib.parse.quote(name)
+    # You can tweak options: backgroundColor, radius, randomizeIds, etc.
+    # Keep size moderate for UI. The service returns SVG.
+    return (
+        f"https://api.dicebear.com/7.x/shapes/svg?seed={seed}"
+        f"&radius=20&backgroundColor=b6e3f4,c0aede,d1d4f9&randomizeIds=true"
+    )
+
+
+def _parse_names_from_text(text: str):
+    """Try to parse JSON {"names":[...]} first; fallback to line extraction."""
+    try:
+        start = text.find('{')
+        end = text.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            obj = json.loads(text[start:end + 1])
+            names = obj.get('names') if isinstance(obj, dict) else None
+            if isinstance(names, list):
+                return [str(n).strip() for n in names if str(n).strip()]
+    except Exception:
+        pass
+    # Fallback: split lines, remove bullets and numbering
+    lines = [l.strip('-•* ').strip() for l in text.splitlines()]
+    names = [l for l in lines if 3 <= len(l) <= 40]
+    # Deduplicate preserving order
+    seen, result = set(), []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            result.append(n)
+    return result[:12]
+
+
+def _camel_case_join(words: list[str]) -> str:
+    return ''.join(w[:1].upper() + w[1:] for w in words if w)
+
+
+def enforce_constraints_on_names(user_message: str, names: list[str]) -> list[str]:
+    """Apply simple constraints inferred from the user message (e.g., one word)."""
+    lower = (user_message or '').lower()
+    one_word = any(k in lower for k in ["one word", "one-word", "single word", "single-word", "1 word", "1-word"])
+
+    cleaned: list[str] = []
+    for n in names:
+        nn = n.strip()
+        if one_word:
+            # Remove non-alphanumeric and concatenate words in CamelCase
+            tokens = re.findall(r"[a-zA-Z0-9]+", nn)
+            nn = _camel_case_join(tokens)
+        cleaned.append(nn)
+
+    # Deduplicate while preserving order
+    seen = set()
+    out = []
+    for n in cleaned:
+        if n and n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def generate_names_gemini_rest(idea: str, theme: str, user_message: str, history: list, api_key: str):
+    """Fallback to Gemini REST API if SDK path fails."""
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-1.5-flash:generateContent?key=" + api_key
+    )
+    sys_prompt = (
+        "You are BrandBot, an expert business naming assistant. "
+        "Given a business idea and theme, propose catchy, brandable names. "
+        "Keep names concise (1-3 words), avoid special characters, and ensure a unique vibe. "
+        "After a brief helpful explanation, output a single JSON object on its own line exactly as: "
+        '{"names":["Name One","Name Two", ...]}'
+    )
+    contents = [
+        {"role": "user", "parts": [{"text": sys_prompt}]},
+        {"role": "user", "parts": [{"text": f"Context => Idea: {idea}\nTheme: {theme}"}]},
+    ]
+    for h in history[-6:]:
+        role = "user" if h.get("role") == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": str(h.get("content", ""))}]})
+    contents.append({"role": "user", "parts": [{"text": user_message}]})
+
+    payload = {"contents": contents}
+    r = requests.post(url, json=payload, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    text = ""
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+        # Concatenate text parts if multiple
+        text = "\n".join(p.get("text", "") for p in parts)
+    except Exception:
+        text = ""
+    names = _parse_names_from_text(text)
+    return text, names
+
+
+def generate_names_gemini(idea: str, theme: str, user_message: str, history: list, api_key: str | None = None):
+    """Generate business names using Gemini if API key and library are available.
+    history: list of {role: 'user'|'assistant', content: '...'}
+    Returns (assistant_text, names_list)
+    """
+    # Use provided api_key or read from environment dynamically
+    api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key or not GEMINI_AVAILABLE:
+        raise RuntimeError("Gemini API not configured or library missing")
+
+    genai.configure(api_key=api_key)
+    # Provide a clear system instruction and use chat for better multi-turn handling
+    sys_prompt = (
+        "You are BrandBot, an expert business naming assistant. "
+        "Given a business idea and theme, propose catchy, brandable names. "
+        "Keep names concise (1-3 words), avoid special characters, and ensure a unique vibe. "
+        "After a brief helpful explanation, output a single JSON object on its own line exactly as: "
+        '{"names":["Name One","Name Two", ...]}'
+    )
+
+    model = genai.GenerativeModel(
+        'gemini-1.5-flash',
+        system_instruction=sys_prompt,
+    )
+
+    # Convert history to the expected format
+    chat_history = []
+    for h in history[-6:]:
+        role = 'user' if h.get('role') == 'user' else 'model'
+        content = str(h.get('content', ''))
+        chat_history.append({"role": role, "parts": [content]})
+
+    chat = model.start_chat(history=chat_history)
+    user_block = f"Context => Idea: {idea}\nTheme: {theme}\nUser: {user_message}"
+    resp = chat.send_message(user_block)
+
+    # Extract text robustly
+    text = getattr(resp, 'text', None)
+    if not text and getattr(resp, 'candidates', None):
+        try:
+            text = resp.candidates[0].content.parts[0].text
+        except Exception:
+            text = ""
+    text = text or ""
+    names = _parse_names_from_text(text)
+    return text, names
 
 def generate_svg_logo(idea):
     """Generates creative themed SVG logos based on business type."""
@@ -175,11 +413,15 @@ def generate_business_names():
         return jsonify({"error": "Business idea and theme are required."}), 400
 
     try:
-        if USE_ML_PIPELINE:
-            # Use lightweight ML Pipeline for generation
+        business_names = None
+        # Prefer external free provider if enabled
+        if USE_EXTERNAL_APIS and NAME_PROVIDER == "datamuse":
+            business_names = generate_names_datamuse(idea, theme)
+        # Then try ML pipeline if available
+        if not business_names and USE_ML_PIPELINE and NAME_PROVIDER in ("ml", "auto"):
             business_names = ml_pipeline.generate_business_names(idea, theme)
-        else:
-            # Fallback to template-based generation
+        # Finally fallback to templates
+        if not business_names:
             business_names = generate_template_names(idea, theme)
 
         return jsonify({
@@ -217,11 +459,15 @@ def generate_logo():
         return jsonify({"error": "A business name is required."}), 400
 
     try:
-        if USE_ML_PIPELINE:
-            # Use ML Pipeline for logo generation
+        logo_url = None
+        # Prefer external free DiceBear provider if enabled
+        if USE_EXTERNAL_APIS and LOGO_PROVIDER == "dicebear":
+            logo_url = dicebear_logo_url(name)
+        # Then try ML pipeline
+        if not logo_url and USE_ML_PIPELINE and LOGO_PROVIDER in ("ml", "auto"):
             logo_url = ml_pipeline.logo_generator.generate_logo(name)
-        else:
-            # Fallback to simple SVG generation
+        # Finally fallback to simple inline SVG
+        if not logo_url:
             logo_url = generate_svg_logo(name)
 
         return jsonify({
@@ -235,6 +481,81 @@ def generate_logo():
         return jsonify({
             "business_logo_url": logo_url
         })
+
+
+@app.route('/chat_names', methods=['POST'])
+def chat_names():
+    """Chat endpoint that uses Gemini to propose business names.
+    Payload: { idea, theme, message, history: [{role, content}] }
+    """
+    data = request.get_json() or {}
+    idea = (data.get('idea') or '').strip()
+    theme = (data.get('theme') or '').strip()
+    message = (data.get('message') or '').strip()
+    history = data.get('history') or []
+
+    if not idea or not theme:
+        return jsonify({"error": "Both idea and theme are required"}), 400
+    if not message:
+        return jsonify({"error": "A message is required"}), 400
+
+    # Ensure latest .env is loaded so newly added keys are picked up without full restart
+    try:
+        from dotenv import load_dotenv as _load_dotenv
+        _load_dotenv()
+    except Exception:
+        pass
+
+    current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+    # If Gemini isn't configured/available, gracefully fall back to free provider (Datamuse)
+    if not current_key or not GEMINI_AVAILABLE:
+        try:
+            names = generate_names_datamuse(idea, theme, max_results=8)
+        except Exception:
+            names = generate_template_names(idea, theme)
+        assistant_text = (
+            "Gemini chat is not configured on the server, so I'm using a free provider "
+            "to suggest names. To enable Gemini, set GEMINI_API_KEY on the server."
+        )
+        return jsonify({
+            "assistant": assistant_text,
+            "names": enforce_constraints_on_names(message, names)
+        })
+
+    try:
+        assistant_text, names = generate_names_gemini(idea, theme, message, history, api_key=current_key)
+        # If Gemini returns no names, optionally fall back to Datamuse combo based on message keywords
+        if not names:
+            names = generate_names_datamuse(idea, theme, max_results=8)
+        return jsonify({
+            "assistant": assistant_text,
+            "names": enforce_constraints_on_names(message, names)
+        })
+    except Exception as e:
+        logger.warning(f"Gemini SDK chat failed: {e}. Trying REST fallback...")
+        try:
+            assistant_text, names = generate_names_gemini_rest(idea, theme, message, history, api_key=current_key)
+            if not names:
+                names = generate_names_datamuse(idea, theme, max_results=8)
+            return jsonify({
+                "assistant": assistant_text or "Here are some ideas.",
+                "names": enforce_constraints_on_names(message, names)
+            })
+        except Exception as e2:
+            logger.error(f"Gemini REST fallback failed: {e2}. Using free provider.")
+            try:
+                names = generate_names_datamuse(idea, theme, max_results=8)
+            except Exception:
+                names = generate_template_names(idea, theme)
+            assistant_text = (
+                "I couldn't reach Gemini just now, so here are suggestions from a free provider. "
+                "You can retry or adjust your prompt."
+            )
+            return jsonify({
+                "assistant": assistant_text,
+                "names": enforce_constraints_on_names(message, names)
+            })
 
 @app.route('/train_pipeline', methods=['POST'])
 def train_pipeline():
@@ -278,6 +599,24 @@ def health_check():
         "timestamp": str(Path(__file__).stat().st_mtime)
     })
 
+@app.route('/status', methods=['GET'])
+def status():
+    """Expose key feature availability (e.g., Gemini)."""
+    # Re-read env to reflect any recent .env changes without full restart
+    try:
+        from dotenv import load_dotenv as _load_dotenv
+        _load_dotenv()
+    except Exception:
+        pass
+    current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    return jsonify({
+        "gemini_configured": bool(current_key),
+        "gemini_available": bool(current_key and GEMINI_AVAILABLE),
+        "external_apis": USE_EXTERNAL_APIS,
+        "name_provider": NAME_PROVIDER,
+        "logo_provider": LOGO_PROVIDER
+    })
+
 @app.route('/pipeline_status', methods=['GET'])
 def pipeline_status():
     """Get the status of the ML pipeline."""
@@ -290,4 +629,5 @@ def pipeline_status():
 if __name__ == '__main__':
     logger.info("Starting Business Generator API Server...")
     logger.info(f"ML Pipeline enabled: {USE_ML_PIPELINE}")
+    logger.info(f"External APIs enabled: {USE_EXTERNAL_APIS} (names={NAME_PROVIDER}, logos={LOGO_PROVIDER})")
     app.run(port=5000, debug=True)
